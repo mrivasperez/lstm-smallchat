@@ -89,23 +89,79 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         embedded = self.embedding(x)
-        _, (hidden, cell) = self.lstm(embedded)
-        return hidden, cell
+        outputs, (hidden, cell) = self.lstm(
+            embedded)  # Note: We need outputs here
+        return outputs, hidden, cell
 
 
-class Decoder(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim):
-        super(Decoder, self).__init__()
+class Attention(nn.Module):
+    def __init__(self, hidden_dim):
+        super(Attention, self).__init__()
+        self.attn = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.v = nn.Linear(hidden_dim, 1, bias=False)
+
+    def forward(self, hidden, encoder_outputs):
+        # hidden: [batch_size, hidden_dim]
+        # encoder_outputs: [batch_size, seq_len, hidden_dim]
+
+        seq_len = encoder_outputs.shape[1]
+
+        # Repeat the hidden state of the decoder across the sequence length dimension
+        hidden_repeated = hidden.unsqueeze(1).repeat(1, seq_len, 1)
+
+        # Calculate attention energies
+        energy = torch.tanh(
+            self.attn(torch.cat((hidden_repeated, encoder_outputs), dim=2)))
+
+        # Calculate attention weights
+        attention = self.v(energy).squeeze(2)  # [batch_size, seq_len]
+
+        # Softmax to get probabilities
+        return nn.functional.softmax(attention, dim=1)
+
+
+class DecoderWithAttention(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, attention):
+        super(DecoderWithAttention, self).__init__()
         self.embedding = nn.Embedding(
             vocab_size, embedding_dim, padding_idx=word2idx['<pad>'])
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        self.lstm = nn.LSTM(embedding_dim + hidden_dim,
+                            hidden_dim, batch_first=True)
         self.fc = nn.Linear(hidden_dim, vocab_size)
+        self.attention = attention
 
-    def forward(self, x, hidden, cell):
-        embedded = self.embedding(x)
-        output, (hidden, cell) = self.lstm(embedded, (hidden, cell))
-        output = self.fc(output)
-        return output, hidden, cell
+    def forward(self, x, hidden, cell, encoder_outputs):
+        # x: [batch_size]  (previous word)
+        # hidden: [batch_size, hidden_dim]
+        # cell: [batch_size, hidden_dim]
+        # encoder_outputs: [batch_size, seq_len, hidden_dim]
+
+        # [batch_size, 1, embedding_dim]
+        embedded = self.embedding(x.unsqueeze(1))
+
+        # Calculate attention weights
+        attn_weights = self.attention(
+            hidden, encoder_outputs)  # [batch_size, seq_len]
+
+        # Calculate context vector
+        context = attn_weights.unsqueeze(1).bmm(
+            encoder_outputs)  # [batch_size, 1, hidden_dim]
+
+        # Concatenate embedding and context
+        # [batch_size, 1, embedding_dim + hidden_dim]
+        rnn_input = torch.cat((embedded, context), dim=2)
+
+        # Pass through LSTM
+        output, (hidden, cell) = self.lstm(
+            rnn_input, (hidden.unsqueeze(0), cell.unsqueeze(0)))
+
+        # hidden: [1, batch_size, hidden_dim]
+        # cell: [1, batch_size, hidden_dim]
+
+        # Pass through fully connected layer
+        output = self.fc(output.squeeze(1))  # [batch_size, vocab_size]
+
+        return output, hidden.squeeze(0), cell.squeeze(0), attn_weights
 
 
 class Seq2Seq(nn.Module):
@@ -119,17 +175,17 @@ class Seq2Seq(nn.Module):
         vocab_size = self.decoder.fc.out_features
 
         outputs = torch.zeros(batch_size, max_length, vocab_size).to(device)
-        hidden, cell = self.encoder(question)
+        encoder_outputs, hidden, cell = self.encoder(question)
 
         # First input to the decoder is the <sos> token
         input = answer[:, 0]
 
         for t in range(1, max_length):
-            output, hidden, cell = self.decoder(
-                input.unsqueeze(1), hidden, cell)
-            outputs[:, t] = output.squeeze(1)
+            output, hidden, cell, attn_weights = self.decoder(
+                input, hidden, cell, encoder_outputs)
+            outputs[:, t] = output
             teacher_force = np.random.random() < teacher_forcing_ratio
-            top1 = output.argmax(2).squeeze(1)
+            top1 = output.argmax(1)
             input = answer[:, t] if teacher_force else top1
 
         return outputs
@@ -144,7 +200,9 @@ if os.path.exists(model_path):
     # Load the saved model
     print("Loading saved model...")
     encoder = Encoder(len(word2idx), embedding_dim, hidden_dim)
-    decoder = Decoder(len(word2idx), embedding_dim, hidden_dim)
+    attention = Attention(hidden_dim)
+    decoder = DecoderWithAttention(
+        len(word2idx), embedding_dim, hidden_dim, attention)
     model = Seq2Seq(encoder, decoder).to(device)
     model.load_state_dict(torch.load(model_path))
     print("Model loaded from:", model_path)
@@ -152,7 +210,9 @@ else:
     # Instantiate a new model
     print("No saved model found. Training a new model...")
     encoder = Encoder(len(word2idx), embedding_dim, hidden_dim)
-    decoder = Decoder(len(word2idx), embedding_dim, hidden_dim)
+    attention = Attention(hidden_dim)
+    decoder = DecoderWithAttention(
+        len(word2idx), embedding_dim, hidden_dim, attention)
     model = Seq2Seq(encoder, decoder).to(device)
 
     # Define loss function and optimizer
@@ -212,14 +272,14 @@ def generate_response(question, max_response_length=20):
     with torch.no_grad():
         question_tokenized = tokenize_and_pad(
             [question], max_length).to(device)
-        hidden, cell = model.encoder(question_tokenized)
+        encoder_outputs, hidden, cell = model.encoder(question_tokenized)
         input = torch.tensor([word2idx['<sos>']]).to(device)
         response = []
 
         for _ in range(max_response_length):
-            output, hidden, cell = model.decoder(
-                input.unsqueeze(0), hidden, cell)
-            predicted_word_idx = output.argmax(2).item()
+            output, hidden, cell, attn_weights = model.decoder(
+                input, hidden, cell, encoder_outputs)
+            predicted_word_idx = output.argmax(1).item()
             if predicted_word_idx == word2idx['<eos>']:
                 break
             response.append(idx2word[predicted_word_idx])

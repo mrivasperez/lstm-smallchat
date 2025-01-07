@@ -41,7 +41,7 @@ for sentence in questions + answers:
 
 
 # Tokenize and pad sequences
-def tokenize_and_pad(sentences):
+def tokenize_and_pad(sentences, max_length):
     tokenized = []
     for sentence in sentences:
         tokens = [word2idx['<sos>']] + [word2idx.get(word, word2idx['<unk>'])

@@ -164,7 +164,7 @@ else:
 
     def print_welcome_message():
         print("************************************")
-        print("*  Welcome to the Chatbot Trainer! *")
+        print("*      Welcome to Small Chat!      *")
         print("************************************")
         print("\nStarting training process...\n")
 

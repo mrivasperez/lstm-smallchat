@@ -13,9 +13,8 @@ batch_size = 32
 num_epochs = 30
 learning_rate = 0.001
 
+
 # Load and preprocess the data
-
-
 def load_data(file_path):
     questions = []
     answers = []
@@ -40,10 +39,9 @@ for sentence in questions + answers:
             idx2word[word_index] = word
             word_index += 1
 
+
 # Tokenize and pad sequences
-
-
-def tokenize_and_pad(sentences, max_length):
+def tokenize_and_pad(sentences):
     tokenized = []
     for sentence in sentences:
         tokens = [word2idx['<sos>']] + [word2idx.get(word, word2idx['<unk>'])
@@ -59,9 +57,8 @@ max_length = max(len(s.split())
 questions_tokenized = tokenize_and_pad(questions, max_length)
 answers_tokenized = tokenize_and_pad(answers, max_length)
 
+
 # Dataset and DataLoader
-
-
 class ChatDataset(Dataset):
     def __init__(self, questions, answers):
         self.questions = questions
@@ -77,9 +74,8 @@ class ChatDataset(Dataset):
 dataset = ChatDataset(questions_tokenized, answers_tokenized)
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
+
 # Model Definition (LSTM)
-
-
 class Encoder(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim):
         super(Encoder, self).__init__()
@@ -204,9 +200,8 @@ else:
     torch.save(model.state_dict(), model_path)
     print("Model saved to:", model_path)
 
+
 # Inference (Testing/Chatting)
-
-
 def generate_response(question, max_response_length=20):
     model.eval()
     with torch.no_grad():
